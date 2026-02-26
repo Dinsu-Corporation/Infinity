@@ -28,8 +28,32 @@ final class Container
     }
 
     /**
+     * Retrieves a primitive parameter.
+     */
+    public function getParam(string $name): mixed
+    {
+        return $this->parameters[$name] ?? null;
+    }
+
+    /**
+     * Checks if a primitive parameter exists.
+     */
+    public function hasParam(string $name): bool
+    {
+        return array_key_exists($name, $this->parameters);
+    }
+
+    /**
+     * Manually bind an instance to the container.
+     */
+    public function set(string $id, object $instance): void
+    {
+        $this->instances[$id] = $instance;
+    }
+
+    /**
      * Resolves a class and its dependencies recursively.
-     * * @throws RuntimeException|ReflectionException
+     * @throws RuntimeException|ReflectionException
      */
     public function get(string $id): object
     {
@@ -75,8 +99,6 @@ final class Container
                     throw new RuntimeException("Unresolvable parameter [\${$paramName}] in class {$id}");
                 }
 
-                // Handle class/interface dependencies
-                /** @psalm-suppress UndefinedClass */
                 $dependencies[] = $this->get($type->getName());
             }
 

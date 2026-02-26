@@ -5,6 +5,9 @@ declare(strict_types=1);
 namespace Dinsu\Infinity;
 
 use Throwable;
+use ReflectionClass;
+use RecursiveDirectoryIterator;
+use RecursiveIteratorIterator;
 use Dinsu\Infinity\Container\Container;
 use Dinsu\Infinity\Config\ConfigLoader;
 use Dinsu\Infinity\Execution\{
@@ -18,53 +21,114 @@ use Dinsu\Infinity\Routing\{
     Router,
     Route,
     Exception\NotFoundException,
-    Exception\MethodNotAllowedException
+    Exception\MethodNotAllowedException,
+    Attribute\Route as RouteAttribute
 };
 
-/**
- * Kernel
- * The heart of the Infinity Framework. Orchestrates the request/response
- * lifecycle by managing configuration, dependency injection, and routing.
- */
 final class Kernel
 {
     private readonly Router $router;
     private readonly Container $container;
     private array $middlewares = [];
+    private readonly string $env;
 
     public function __construct(string $env = 'Dev')
     {
+        $this->env = $env;
         $this->router = new Router();
         $this->container = new Container();
 
-        $configPath = __DIR__ . '/../config';
-        $config = ConfigLoader::load($configPath, $env);
+        $rootPath = dirname(__DIR__, 1);
+        $configPath = $rootPath . '/config';
 
-        foreach ($config as $key => $value) {
-            $this->container->setParam($key, $value);
+        # DEBUG: Verify path in logs
+        file_put_contents('php://stderr', "Kernel Root: $rootPath\n");
+        file_put_contents('php://stderr', "Config Path: $configPath\n");
+
+        try {
+            $config = ConfigLoader::load($configPath, $env);
+            foreach ($config as $key => $value) {
+                $this->container->setParam($key, $value);
+            }
+        } catch (Throwable $e) {
+            file_put_contents('php://stderr', "Config Load Error: " . $e->getMessage() . "\n");
+        }
+
+        $this->boot();
+    }
+
+    private function boot(): void
+    {
+        if ($this->isSystemRouteEnabled()) {
+            file_put_contents('php://stderr', "System routes ENABLED. Scanning...\n");
+            $this->scanForRoutes(__DIR__ . '/Domain', 'Dinsu\Infinity\Domain');
+        } else {
+            file_put_contents('php://stderr', "System routes DISABLED.\n");
+        }
+
+        $appControllerPath = dirname(__DIR__, 1) . '/app/Controller';
+        if (is_dir($appControllerPath)) {
+            $this->scanForRoutes($appControllerPath, 'App\Controller');
         }
     }
 
-    /**
-     * Adds a global middleware to the execution pipeline.
-     */
+    private function isSystemRouteEnabled(): bool
+    {
+        $infinityConfig = $this->container->getParam('infinity');
+        return is_array($infinityConfig) &&
+               isset($infinityConfig['enable_system_routes']) &&
+               $infinityConfig['enable_system_routes'] === true;
+    }
+
+    private function scanForRoutes(string $path, string $namespace): void
+    {
+        if (!is_dir($path)) {
+            file_put_contents('php://stderr', "Directory not found: $path\n");
+            return;
+        }
+
+        $iterator = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($path));
+        foreach ($iterator as $file) {
+            if ($file->isDir() || $file->getExtension() !== 'php') {
+                continue;
+            }
+
+            $relativePath = substr($file->getPathname(), strlen($path));
+            $className = $namespace . str_replace(['/', '.php'], ['\\', ''], $relativePath);
+
+            if (!class_exists($className)) {
+                continue;
+            }
+
+            $reflection = new ReflectionClass($className);
+            foreach ($reflection->getMethods() as $method) {
+                $attributes = $method->getAttributes(RouteAttribute::class);
+                foreach ($attributes as $attribute) {
+                    $routeAttr = $attribute->newInstance();
+                    file_put_contents('php://stderr', "Registered: [{$routeAttr->method}] {$routeAttr->path}\n");
+
+                    $this->register(
+                        $routeAttr->method,
+                        $routeAttr->path,
+                        [$this->container->get($className), $method->getName()]
+                    );
+                }
+            }
+        }
+    }
+
     public function addMiddleware(MiddlewareInterface $middleware): self
     {
         $this->middlewares[] = $middleware;
         return $this;
     }
 
-    /**
-     * Registers a route with the router.
-     * Automatically resolves handlers from the container if a class name is provided.
-     */
     public function register(string $method, string $path, mixed $handlerInput): self
     {
         $handler = match(true) {
             $handlerInput instanceof RequestHandlerInterface => $handlerInput,
-
+            is_array($handlerInput) && is_object($handlerInput[0]) => new CallableHandler($handlerInput),
             is_string($handlerInput) && class_exists($handlerInput) => $this->container->get($handlerInput),
-
             default => new CallableHandler($handlerInput)
         };
 
@@ -72,18 +136,12 @@ final class Kernel
         return $this;
     }
 
-    /**
-     * Dispatches the request through the middleware stack to the matched route.
-     */
     public function run(Request $request): Response
     {
         try {
             [$route, $params] = $this->router->resolve($request->method(), $request->path());
-
             $request = $request->withRouteParams($params);
-
             return $this->buildPipeline($route->handler())->handle($request);
-
         } catch (NotFoundException $e) {
             return Response::json(['error' => 'Not Found', 'path' => $request->path()], 404);
         } catch (MethodNotAllowedException $e) {
@@ -92,23 +150,17 @@ final class Kernel
         } catch (Throwable $e) {
             return Response::json([
                 'error' => 'Internal Server Error',
-                'message' => $e->getMessage(),
-                'trace' => ($this->container->get('env') === 'Dev') ? $e->getTrace() : []
+                'message' => $e->getMessage()
             ], 500);
         }
     }
 
-    /**
-     * Wraps the core handler in layers of middleware (The Onion).
-     */
     private function buildPipeline(RequestHandlerInterface $coreHandler): RequestHandlerInterface
     {
         $pipeline = $coreHandler;
-
         foreach (array_reverse($this->middlewares) as $middleware) {
             $pipeline = new MiddlewareStack($middleware, $pipeline);
         }
-
         return $pipeline;
     }
 

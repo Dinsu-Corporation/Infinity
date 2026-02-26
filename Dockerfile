@@ -19,7 +19,7 @@ COPY . .
 RUN composer dump-autoload --optimize --no-dev
 
 ENV PHP_SERVER_ROOT=/app/public
-ENV FRANKENPHP_CONFIG="worker /app/public/index.php"
+ENV FRANKENPHP_CONFIG="worker /app/public/Index.php"
 
 EXPOSE 80
 EXPOSE 443

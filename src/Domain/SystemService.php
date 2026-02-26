@@ -31,7 +31,7 @@ final class SystemService
     public function welcomePayload(): array
     {
         return [
-            'name' => 'Dinsu Infinity Kernel',
+            'name' => 'Infinity Kernel',
             'version' => '1.0.0-alpha',
             'message' => 'The Infinity core engine is active and healthy.',
             'endpoints' => [

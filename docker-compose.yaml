@@ -1,5 +1,6 @@
 services:
   php:
+    container_name: infinity-kernel
     build:
       context: .
       dockerfile: Dockerfile
@@ -10,10 +11,20 @@ services:
       - "443:443/udp"
     volumes:
       - .:/app
+      - ./Caddyfile:/etc/caddy/Caddyfile
     environment:
       - CADDY_GLOBAL_OPTIONS=debug
-      - FRANKENPHP_CONFIG=worker /app/public/index.php
+      - APP_ENV=Dev
+      - SERVER_NAME=localhost
     restart: unless-stopped
+    develop:
+      watch:
+        - action: restart
+          path: ./src
+        - action: restart
+          path: ./app
+        - action: restart
+          path: ./config
 
 networks:
   default:

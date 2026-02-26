@@ -8,10 +8,16 @@ use Dinsu\Infinity\Kernel;
 use Dinsu\Infinity\Http\Request;
 
 $env = getenv('APP_ENV') ?: 'Dev';
-
 $kernel = new Kernel($env);
 
-$request = Request::fromGlobals();
-$response = $kernel->run($request);
+$handler = static function () use ($kernel) {
+    $request = Request::fromGlobals();
+    $response = $kernel->run($request);
+    $response->send();
+};
 
-$response->send();
+if (function_exists('frankenphp_handle_request')) {
+    while (frankenphp_handle_request($handler));
+} else {
+    $handler();
+}

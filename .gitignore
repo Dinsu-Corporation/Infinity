@@ -1,14 +1,7 @@
-# Dependencies
 /vendor/
-
-# Configuration & Secrets
+/.idea/
+/.vscode/
 .env
-.env.local
-
-# IDE & OS
-.idea/
-.vscode/
 .DS_Store
-
-# Logs
-*.log
+/storage/*.crt
+/storage/*.key

@@ -1,0 +1,16 @@
+{
+    frankenphp {
+        worker /app/public/Index.php
+    }
+}
+
+localhost {
+    root * /app/public
+    encode zstd gzip
+
+    route {
+        try_files {path} /Index.php
+
+        php_server
+    }
+}
