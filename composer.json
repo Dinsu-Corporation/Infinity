@@ -1,0 +1,27 @@
+{
+    "name": "dinsu/infinity",
+    "description": "An opinionated, minimalist PHP framework featuring reflection-based dependency injection, immutable HTTP abstractions, and tiered environment orchestration.",
+    "type": "project",
+    "license": "MIT",
+    "authors": [
+        {
+            "name": "Dino Suljic",
+            "email": "dino.suljic.96@gmail.com"
+        }
+    ],
+    "require": {
+        "php": ">=8.2",
+        "ext-yaml": "*",
+        "ext-json": "*"
+    },
+    "autoload": {
+        "psr-4": {
+            "Dinsu\\Infinity\\": "src/",
+            "App\\": "app/"
+        }
+    },
+    "config": {
+        "sort-packages": true,
+        "optimize-autoloader": true
+    }
+}
