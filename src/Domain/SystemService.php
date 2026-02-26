@@ -4,16 +4,11 @@ declare(strict_types=1);
 
 namespace Dinsu\Infinity\Domain;
 
-/**
- * SystemService
- * Provides the core framework status and heartbeat data.
- * This is an internal engine service, not part of the user's app logic.
- */
+use Dinsu\Infinity\Attribute\Service;
+
+#[Service]
 final class SystemService
 {
-    /**
-     * Generates a snapshot of the current environment health.
-     */
     public function healthSnapshot(): array
     {
         return [
@@ -25,9 +20,6 @@ final class SystemService
         ];
     }
 
-    /**
-     * Provides the initial handshake payload for the framework root.
-     */
     public function welcomePayload(): array
     {
         return [

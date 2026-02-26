@@ -6,10 +6,18 @@ namespace Dinsu\Infinity;
 
 use Throwable;
 use ReflectionClass;
+use ReflectionAttribute;
+use ReflectionMethod;
 use RecursiveDirectoryIterator;
 use RecursiveIteratorIterator;
 use Dinsu\Infinity\Container\Container;
 use Dinsu\Infinity\Config\ConfigLoader;
+use Dinsu\Infinity\Attribute\RestController;
+use Dinsu\Infinity\Attribute\Component;
+use Dinsu\Infinity\Attribute\Intermediary;
+use Dinsu\Infinity\Attribute\Handle;
+use Dinsu\Infinity\Attribute\Blueprint;
+use Dinsu\Infinity\Attribute\Define;
 use Dinsu\Infinity\Execution\{
     RequestHandlerInterface,
     CallableHandler,
@@ -30,6 +38,7 @@ final class Kernel
     private readonly Router $router;
     private readonly Container $container;
     private array $middlewares = [];
+    private array $exceptionHandlers = [];
     private readonly string $env;
 
     public function __construct(string $env = 'Dev')
@@ -40,10 +49,6 @@ final class Kernel
 
         $rootPath = dirname(__DIR__, 1);
         $configPath = $rootPath . '/config';
-
-        # DEBUG: Verify path in logs
-        file_put_contents('php://stderr', "Kernel Root: $rootPath\n");
-        file_put_contents('php://stderr', "Config Path: $configPath\n");
 
         try {
             $config = ConfigLoader::load($configPath, $env);
@@ -60,15 +65,24 @@ final class Kernel
     private function boot(): void
     {
         if ($this->isSystemRouteEnabled()) {
-            file_put_contents('php://stderr', "System routes ENABLED. Scanning...\n");
-            $this->scanForRoutes(__DIR__ . '/Domain', 'Dinsu\Infinity\Domain');
-        } else {
-            file_put_contents('php://stderr', "System routes DISABLED.\n");
+            $this->scanForComponents(__DIR__ . '/Domain', 'Dinsu\Infinity\Domain');
         }
 
-        $appControllerPath = dirname(__DIR__, 1) . '/app/Controller';
-        if (is_dir($appControllerPath)) {
-            $this->scanForRoutes($appControllerPath, 'App\Controller');
+        $appPath = dirname(__DIR__, 1) . '/app';
+
+        $foldersToScan = [
+            'Controller' => 'App\Controller',
+            'Service' => 'App\Service',
+            'Repository' => 'App\Repository',
+            'Utility' => 'App\Utility',
+            'Config' => 'App\Config'
+        ];
+
+        foreach ($foldersToScan as $folder => $namespace) {
+            $fullPath = $appPath . '/' . $folder;
+            if (is_dir($fullPath)) {
+                $this->scanForComponents($fullPath, $namespace);
+            }
         }
     }
 
@@ -80,10 +94,9 @@ final class Kernel
                $infinityConfig['enable_system_routes'] === true;
     }
 
-    private function scanForRoutes(string $path, string $namespace): void
+    private function scanForComponents(string $path, string $namespace): void
     {
         if (!is_dir($path)) {
-            file_put_contents('php://stderr', "Directory not found: $path\n");
             return;
         }
 
@@ -101,19 +114,78 @@ final class Kernel
             }
 
             $reflection = new ReflectionClass($className);
-            foreach ($reflection->getMethods() as $method) {
-                $attributes = $method->getAttributes(RouteAttribute::class);
-                foreach ($attributes as $attribute) {
-                    $routeAttr = $attribute->newInstance();
-                    file_put_contents('php://stderr', "Registered: [{$routeAttr->method}] {$routeAttr->path}\n");
 
-                    $this->register(
-                        $routeAttr->method,
-                        $routeAttr->path,
-                        [$this->container->get($className), $method->getName()]
-                    );
-                }
+            $this->registerComponentIfMarked($reflection);
+            $this->registerRoutesFromAttributes($reflection);
+            $this->registerExceptionHandlers($reflection);
+            $this->registerDefinitions($reflection);
+        }
+    }
+
+    private function registerComponentIfMarked(ReflectionClass $reflection): void
+    {
+        $attributes = $reflection->getAttributes(Component::class, ReflectionAttribute::IS_INSTANCEOF);
+
+        if (!empty($attributes)) {
+            $this->container->get($reflection->getName());
+        }
+    }
+
+    private function registerRoutesFromAttributes(ReflectionClass $reflection): void
+    {
+        foreach ($reflection->getMethods() as $method) {
+            $attributes = $method->getAttributes(RouteAttribute::class, ReflectionAttribute::IS_INSTANCEOF);
+            foreach ($attributes as $attribute) {
+                $routeAttr = $attribute->newInstance();
+
+                $this->register(
+                    $routeAttr->method,
+                    $routeAttr->path,
+                    [$this->container->get($reflection->getName()), $method->getName()]
+                );
             }
+        }
+    }
+
+    private function registerExceptionHandlers(ReflectionClass $reflection): void
+    {
+        if (empty($reflection->getAttributes(Intermediary::class))) {
+            return;
+        }
+
+        foreach ($reflection->getMethods() as $method) {
+            $attributes = $method->getAttributes(Handle::class);
+            foreach ($attributes as $attribute) {
+                $handlerAttr = $attribute->newInstance();
+                $this->exceptionHandlers[$handlerAttr->exceptionClass] = [
+                    $this->container->get($reflection->getName()),
+                    $method->getName()
+                ];
+            }
+        }
+    }
+
+    private function registerDefinitions(ReflectionClass $reflection): void
+    {
+        if (empty($reflection->getAttributes(Blueprint::class))) {
+            return;
+        }
+
+        $blueprintInstance = $this->container->get($reflection->getName());
+
+        foreach ($reflection->getMethods(ReflectionMethod::IS_PUBLIC) as $method) {
+            $attributes = $method->getAttributes(Define::class);
+            if (empty($attributes)) {
+                continue;
+            }
+
+            $returnType = $method->getReturnType();
+            if (!$returnType || $returnType->isBuiltin()) {
+                continue;
+            }
+
+            $instance = $this->container->resolveMethod($blueprintInstance, $method->getName());
+            $this->container->set($returnType->getName(), $instance);
         }
     }
 
@@ -141,18 +213,62 @@ final class Kernel
         try {
             [$route, $params] = $this->router->resolve($request->method(), $request->path());
             $request = $request->withRouteParams($params);
-            return $this->buildPipeline($route->handler())->handle($request);
-        } catch (NotFoundException $e) {
-            return Response::json(['error' => 'Not Found', 'path' => $request->path()], 404);
-        } catch (MethodNotAllowedException $e) {
-            return Response::json(['error' => 'Method Not Allowed'], 405)
-                ->withHeader('Allow', implode(', ', $e->allowedMethods()));
+
+            $coreHandler = $route->handler();
+            $pipeline = $this->buildPipeline($coreHandler);
+
+            $result = $pipeline->handle($request);
+
+            if ($this->shouldConvertToRestControllerResponse($coreHandler, $result)) {
+                return Response::json($result);
+            }
+
+            return $result instanceof Response ? $result : Response::json($result);
+
         } catch (Throwable $e) {
-            return Response::json([
-                'error' => 'Internal Server Error',
-                'message' => $e->getMessage()
-            ], 500);
+            return $this->handleException($e, $request);
         }
+    }
+
+    private function handleException(Throwable $e, Request $request): Response
+    {
+        foreach ($this->exceptionHandlers as $exceptionClass => $handler) {
+            if ($e instanceof $exceptionClass) {
+                $result = call_user_func($handler, $e, $request);
+
+                $response = $result instanceof Response ? $result : Response::json($result);
+
+                if ($e instanceof MethodNotAllowedException && !isset($response->headers()['allow'])) {
+                    $response = $response->withHeader('Allow', implode(', ', $e->allowedMethods()));
+                }
+
+                return $response;
+            }
+        }
+
+        $status = $e->getCode() >= 400 && $e->getCode() < 600 ? $e->getCode() : 500;
+
+        return Response::json([
+            'error' => 'Internal Server Error',
+            'message' => $this->env === 'Dev' ? $e->getMessage() : 'An unexpected error occurred.'
+        ], $status);
+    }
+
+    private function shouldConvertToRestControllerResponse(RequestHandlerInterface $handler, mixed $result): bool
+    {
+        if (!$handler instanceof CallableHandler || $result instanceof Response) {
+            return false;
+        }
+
+        $callback = $handler->getCallable();
+        if (!is_array($callback) || !isset($callback[0])) {
+            return false;
+        }
+
+        $reflection = new ReflectionClass($callback[0]);
+        $restControllerAttr = $reflection->getAttributes(RestController::class);
+
+        return !empty($restControllerAttr);
     }
 
     private function buildPipeline(RequestHandlerInterface $coreHandler): RequestHandlerInterface

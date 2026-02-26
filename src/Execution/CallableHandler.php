@@ -2,36 +2,84 @@
 
 declare(strict_types=1);
 
-namespace Dinsu\Infinity\Execution; // Updated to Framework Namespace
+namespace Dinsu\Infinity\Execution;
 
 use Closure;
+use ReflectionMethod;
+use ReflectionClass;
+use ReflectionParameter;
 use Dinsu\Infinity\Http\Request;
-use Dinsu\Infinity\Http\Response;
+use Dinsu\Infinity\Attribute\Payload;
 
-/**
- * CallableHandler
- * * Bridges the gap between a simple PHP callable and the formal
- * RequestHandlerInterface. This allows the Kernel to execute
- * controller methods as if they were standalone handler objects.
- */
 final class CallableHandler implements RequestHandlerInterface
 {
-    /** * @var Closure(Request): Response
-     */
     private readonly Closure $handler;
+    private readonly mixed $originalCallable;
 
-    /** * @param callable(Request): Response $handler
-     */
     public function __construct(callable $handler)
     {
+        $this->originalCallable = $handler;
         $this->handler = Closure::fromCallable($handler);
     }
 
-    /**
-     * Executes the bridged callable and returns a standardized Response.
-     */
-    public function handle(Request $request): Response
+    public function handle(Request $request): mixed
     {
-        return ($this->handler)($request);
+        if (!is_array($this->originalCallable)) {
+            return ($this->handler)($request);
+        }
+
+        [$controller, $methodName] = $this->originalCallable;
+        $reflection = new ReflectionMethod($controller, $methodName);
+        $arguments = [];
+
+        foreach ($reflection->getParameters() as $parameter) {
+            $arguments[] = $this->resolveArgument($parameter, $request);
+        }
+
+        return $reflection->invokeArgs($controller, $arguments);
+    }
+
+    private function resolveArgument(ReflectionParameter $parameter, Request $request): mixed
+    {
+        $type = $parameter->getType();
+        $typeName = $type ? $type->getName() : null;
+
+        if ($typeName === Request::class) {
+            return $request;
+        }
+
+        $payloadAttr = $parameter->getAttributes(Payload::class);
+        if (!empty($payloadAttr) && $typeName && class_exists($typeName)) {
+            return $this->mapDto($typeName, $request->parsedBody() ?? []);
+        }
+
+        if ($parameter->isDefaultValueAvailable()) {
+            return $parameter->getDefaultValue();
+        }
+
+        return null;
+    }
+
+    private function mapDto(string $dtoClass, mixed $data): object
+    {
+        $reflection = new ReflectionClass($dtoClass);
+        $dto = $reflection->newInstanceWithoutConstructor();
+
+        $payloadData = is_array($data) ? $data : [];
+
+        foreach ($reflection->getProperties() as $property) {
+            $name = $property->getName();
+            if (array_key_exists($name, $payloadData)) {
+                $property->setAccessible(true);
+                $property->setValue($dto, $payloadData[$name]);
+            }
+        }
+
+        return $dto;
+    }
+
+    public function getCallable(): mixed
+    {
+        return $this->originalCallable;
     }
 }
