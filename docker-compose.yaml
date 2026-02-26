@@ -1,0 +1,20 @@
+services:
+  php:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: dinsu/infinity:latest
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - .:/app
+    environment:
+      - CADDY_GLOBAL_OPTIONS=debug
+      - FRANKENPHP_CONFIG=worker /app/public/index.php
+    restart: unless-stopped
+
+networks:
+  default:
+    name: infinity-network
