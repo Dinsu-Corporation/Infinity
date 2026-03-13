@@ -1,2 +1,6 @@
 infinity:
   enable_system_routes: true
+  middlewares: []
+logging:
+  level: info
+  channel: app

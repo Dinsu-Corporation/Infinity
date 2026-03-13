@@ -8,6 +8,7 @@ use Dinsu\Infinity\Attribute\Intermediary;
 use Dinsu\Infinity\Attribute\Handle;
 use Dinsu\Infinity\Routing\Exception\NotFoundException;
 use Dinsu\Infinity\Routing\Exception\MethodNotAllowedException;
+use Dinsu\Infinity\Validation\ValidationException;
 use Dinsu\Infinity\Http\Request;
 
 #[Intermediary]
@@ -34,6 +35,19 @@ final class DefaultExceptionHandler
             'error' => 'Method Not Allowed',
             'message' => $e->getMessage(),
             'path' => $request->path()
+        ];
+    }
+
+    #[Handle(ValidationException::class)]
+    public function handleValidation(ValidationException $e, Request $request): array
+    {
+        return [
+            'timestamp' => gmdate('c'),
+            'status' => 400,
+            'error' => 'Bad Request',
+            'message' => $e->getMessage(),
+            'path' => $request->path(),
+            'errors' => $e->errors()
         ];
     }
 }
