@@ -12,6 +12,9 @@ use RecursiveDirectoryIterator;
 use RecursiveIteratorIterator;
 use Dinsu\Infinity\Container\Container;
 use Dinsu\Infinity\Config\ConfigLoader;
+use Dinsu\Infinity\Config\EnvLoader;
+use Dinsu\Infinity\Lifecycle\LifecycleHookInterface;
+use Dinsu\Infinity\Log\Logger;
 use Dinsu\Infinity\Attribute\RestController;
 use Dinsu\Infinity\Attribute\Component;
 use Dinsu\Infinity\Attribute\Intermediary;
@@ -39,7 +42,9 @@ final class Kernel
     private readonly Container $container;
     private array $middlewares = [];
     private array $exceptionHandlers = [];
+    private array $lifecycleHooks = [];
     private readonly string $env;
+    private readonly Logger $logger;
 
     public function __construct(string $env = 'Dev')
     {
@@ -50,6 +55,8 @@ final class Kernel
         $rootPath = dirname(__DIR__, 1);
         $configPath = $rootPath . '/config';
 
+        EnvLoader::load($rootPath . '/.env');
+
         try {
             $config = ConfigLoader::load($configPath, $env);
             foreach ($config as $key => $value) {
@@ -59,7 +66,12 @@ final class Kernel
             file_put_contents('php://stderr', "Config Load Error: " . $e->getMessage() . "\n");
         }
 
+        $this->logger = $this->createLogger();
+        $this->container->set(Logger::class, $this->logger);
+
         $this->boot();
+        $this->registerConfiguredMiddlewares();
+        $this->startLifecycle();
     }
 
     private function boot(): void
@@ -75,13 +87,40 @@ final class Kernel
             'Service' => 'App\Service',
             'Repository' => 'App\Repository',
             'Utility' => 'App\Utility',
-            'Config' => 'App\Config'
+            'Config' => 'App\Config',
+            'Middleware' => 'App\Middleware',
+            'Lifecycle' => 'App\Lifecycle'
         ];
 
         foreach ($foldersToScan as $folder => $namespace) {
             $fullPath = $appPath . '/' . $folder;
             if (is_dir($fullPath)) {
                 $this->scanForComponents($fullPath, $namespace);
+            }
+        }
+    }
+
+    private function registerConfiguredMiddlewares(): void
+    {
+        $infinityConfig = $this->container->getParam('infinity');
+
+        if (!is_array($infinityConfig)) {
+            return;
+        }
+
+        $middlewares = $infinityConfig['middlewares'] ?? [];
+        if (!is_array($middlewares)) {
+            return;
+        }
+
+        foreach ($middlewares as $middlewareClass) {
+            if (!is_string($middlewareClass) || !class_exists($middlewareClass)) {
+                continue;
+            }
+
+            $instance = $this->container->get($middlewareClass);
+            if ($instance instanceof MiddlewareInterface) {
+                $this->addMiddleware($instance);
             }
         }
     }
@@ -119,6 +158,7 @@ final class Kernel
             $this->registerRoutesFromAttributes($reflection);
             $this->registerExceptionHandlers($reflection);
             $this->registerDefinitions($reflection);
+            $this->registerLifecycleHooks($reflection);
         }
     }
 
@@ -189,6 +229,57 @@ final class Kernel
         }
     }
 
+    private function registerLifecycleHooks(ReflectionClass $reflection): void
+    {
+        if (!$reflection->implementsInterface(LifecycleHookInterface::class)) {
+            return;
+        }
+
+        $this->lifecycleHooks[] = $this->container->get($reflection->getName());
+    }
+
+    private function startLifecycle(): void
+    {
+        foreach ($this->lifecycleHooks as $hook) {
+            try {
+                $hook->onStart();
+            } catch (Throwable $e) {
+                $this->logger->error('Lifecycle onStart failed', [
+                    'hook' => $hook::class,
+                    'error' => $e->getMessage()
+                ]);
+            }
+        }
+
+        register_shutdown_function(function (): void {
+            foreach ($this->lifecycleHooks as $hook) {
+                try {
+                    $hook->onStop();
+                } catch (Throwable $e) {
+                    $this->logger->error('Lifecycle onStop failed', [
+                        'hook' => $hook::class,
+                        'error' => $e->getMessage()
+                    ]);
+                }
+            }
+        });
+    }
+
+    private function createLogger(): Logger
+    {
+        $logging = $this->container->getParam('logging');
+
+        $level = getenv('APP_LOG_LEVEL') ?: 'info';
+        $channel = getenv('APP_LOG_CHANNEL') ?: 'app';
+
+        if (is_array($logging)) {
+            $level = $logging['level'] ?? $level;
+            $channel = $logging['channel'] ?? $channel;
+        }
+
+        return new Logger((string) $level, (string) $channel);
+    }
+
     public function addMiddleware(MiddlewareInterface $middleware): self
     {
         $this->middlewares[] = $middleware;
@@ -248,9 +339,18 @@ final class Kernel
 
         $status = $e->getCode() >= 400 && $e->getCode() < 600 ? $e->getCode() : 500;
 
+        $this->logger->error('Unhandled exception', [
+            'error' => $e->getMessage(),
+            'status' => $status,
+            'path' => $request->path()
+        ]);
+
         return Response::json([
-            'error' => 'Internal Server Error',
-            'message' => $this->env === 'Dev' ? $e->getMessage() : 'An unexpected error occurred.'
+            'timestamp' => gmdate('c'),
+            'status' => $status,
+            'error' => $status === 500 ? 'Internal Server Error' : 'Request Error',
+            'message' => $this->env === 'Dev' ? $e->getMessage() : 'An unexpected error occurred.',
+            'path' => $request->path()
         ], $status);
     }
 

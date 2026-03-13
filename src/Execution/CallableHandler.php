@@ -10,6 +10,8 @@ use ReflectionClass;
 use ReflectionParameter;
 use Dinsu\Infinity\Http\Request;
 use Dinsu\Infinity\Attribute\Payload;
+use Dinsu\Infinity\Validation\ValidatableInterface;
+use Dinsu\Infinity\Validation\ValidationException;
 
 final class CallableHandler implements RequestHandlerInterface
 {
@@ -72,6 +74,13 @@ final class CallableHandler implements RequestHandlerInterface
             if (array_key_exists($name, $payloadData)) {
                 $property->setAccessible(true);
                 $property->setValue($dto, $payloadData[$name]);
+            }
+        }
+
+        if ($dto instanceof ValidatableInterface) {
+            $errors = $dto->validate();
+            if (!empty($errors)) {
+                throw new ValidationException($errors);
             }
         }
 

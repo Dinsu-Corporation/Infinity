@@ -29,7 +29,9 @@ final class ConfigLoader
         $config = self::parse($mainFile);
         $envConfig = self::parse($envFile);
 
-        return array_replace_recursive($config, $envConfig);
+        $merged = array_replace_recursive($config, $envConfig);
+
+        return self::applyEnvOverrides($merged, $_ENV);
     }
 
     /**
@@ -52,5 +54,88 @@ final class ConfigLoader
         $data = yaml_parse_file($file);
 
         return is_array($data) ? $data : [];
+    }
+
+    private static function applyEnvOverrides(array $config, array $env): array
+    {
+        foreach ($env as $key => $value) {
+            if (!is_string($key) || !is_string($value)) {
+                continue;
+            }
+
+            if (!str_starts_with($key, 'CONFIG__')) {
+                continue;
+            }
+
+            $path = substr($key, 8);
+            if ($path === '') {
+                continue;
+            }
+
+            $segments = array_map(
+                static fn (string $segment): string => strtolower($segment),
+                array_filter(explode('__', $path), 'strlen')
+            );
+
+            if (empty($segments)) {
+                continue;
+            }
+
+            $config = self::setByPath($config, $segments, self::castValue($value));
+        }
+
+        return $config;
+    }
+
+    private static function setByPath(array $config, array $segments, mixed $value): array
+    {
+        $ref =& $config;
+        $lastIndex = count($segments) - 1;
+
+        foreach ($segments as $index => $segment) {
+            if ($index === $lastIndex) {
+                $ref[$segment] = $value;
+                break;
+            }
+
+            if (!isset($ref[$segment]) || !is_array($ref[$segment])) {
+                $ref[$segment] = [];
+            }
+
+            $ref =& $ref[$segment];
+        }
+
+        return $config;
+    }
+
+    private static function castValue(string $value): mixed
+    {
+        $trimmed = trim($value);
+        $lower = strtolower($trimmed);
+
+        if ($lower === 'true') {
+            return true;
+        }
+
+        if ($lower === 'false') {
+            return false;
+        }
+
+        if ($lower === 'null') {
+            return null;
+        }
+
+        if (is_numeric($trimmed)) {
+            return $trimmed + 0;
+        }
+
+        if (str_starts_with($trimmed, '{') || str_starts_with($trimmed, '[')) {
+            $decoded = json_decode($trimmed, true);
+            if (json_last_error() === JSON_ERROR_NONE) {
+                return $decoded;
+            }
+        }
+
+        return $trimmed;
     }
 }
